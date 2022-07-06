@@ -19,6 +19,15 @@ def checksum(s: str) -> int:
         sum += ord(c)
     return sum % 256
 
+def escape(s: str) -> str:
+    r = ""
+    for c in s:
+        if c == "$" or c == "#" or c == "*" or c == "}":
+            r += "}" + str(ord(c) ^ 0x20)
+        else:
+            r += c
+    return r
+
 def decompose(s: str) -> List[str]:
     i = 0
     l = []
@@ -95,6 +104,8 @@ class Connection:
         if not self.connected():
             raise Exception("not connected")
 
+        data = escape(data)
+
         for _ in range(5):
             chk = "{0:02x}".format(checksum(data))
             pkt = "$" + data + "#" + chk
@@ -132,12 +143,14 @@ class Connection:
                 if repeat == 0:
                     raise Exception("failed to receive response")
 
-            if r == "\\":
+            if r == "}":
                 chksum += ord(r)
                 r = self.socket.recv(1).decode()
-
-            chksum += ord(r)
-            packet += str(r)
+                chksum += ord(r)
+                packet += str(ord(r) ^ 0x20)
+            else:
+                chksum += ord(r)
+                packet += str(r)
 
             if len(packet) > maxlen:
                 raise Exception("response length exceeds limit")
