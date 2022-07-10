@@ -38,7 +38,7 @@ class Command:
             raise Exception("need {} argument(s) for {}, have {}".format(
                 self.argc, self.name, len(args)))
 
-        cmd = "e," + self.parent.hierarchy_name() + "," + self.name
+        cmd = "exec," + self.parent.hierarchy_name() + "," + self.name
         if args:
             cmd = cmd + "," + ",".join(args)
 

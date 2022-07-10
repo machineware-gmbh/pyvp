@@ -187,7 +187,7 @@ class Application:
     def handle_run(self, args: List[str]):
         self.session.run()
         try:
-            while self.session.running:
+            while self.session.running():
                 time.sleep(0.1)
                 sys.stdout.write("\033[1000D{}{:<16}{}{:.9f}s | {}".format(
                     termcolors.HIGHLIGHT, "Simulating...",
@@ -196,7 +196,7 @@ class Application:
                 sys.stdout.flush()
         except KeyboardInterrupt:
             self.session.stop()
-        print("")
+        print(f"\nStopped by {self.session.reason()}")
 
     def handle_info(self, args):
         reports = {

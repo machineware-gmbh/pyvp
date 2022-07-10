@@ -114,7 +114,7 @@ class Connection:
             if resp == '+':
                 return
 
-        raise Exception("failed to send command")
+        raise Exception("failed to send command: " + data)
 
     def recv(self) -> str:
         packet = ""
