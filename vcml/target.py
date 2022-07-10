@@ -19,4 +19,6 @@ class Target:
     def __init__(self, conn, xmlnode):
         self._conn = conn
         self.name = xmlnode.text
-        print("Debug target: " + self.name)
+
+    def __str__(self):
+        return self.name

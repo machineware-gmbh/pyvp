@@ -131,6 +131,14 @@ class Session:
         while self._running:
             self.update_status()
 
+    def stepi(self, target):
+        if not self._running:
+            self._running = True
+            self._conn.command(f"step,{target}")
+
+        while self._running:
+            self.update_status()
+
     def _do_run(self):
         self.update_status()
         while self._running:
@@ -149,6 +157,13 @@ class Session:
             self._conn.command("stop")
             self._thread.join()
             self._thread = None
+
+    def create_breakpoint(self, target, addr) -> int:
+        res = self._conn.command(f"mkbp,{target},{addr}")
+        return int(res[0][20:])
+
+    def delete_breakpoint(self, id):
+        self._conn.command(f"rmbp,{id}")
 
     def dump(self):
         for m in self.modules:
@@ -178,3 +193,9 @@ class Session:
             return None
         m = self.find_module(path[:-1])
         return m.find_command(path[-1:]) if m else None
+
+    def find_target(self, name):
+        for t in self.targets:
+            if t.name == str(name):
+                return t
+        return None

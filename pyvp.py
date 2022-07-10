@@ -43,6 +43,8 @@ class Application:
                 "print information about the current session"),
             "step": Handler(self.handle_step, True,
                 "advances simulation to the next discrete timestamp"),
+            "stepi": Handler(self.handle_stepi, True,
+                "step target one instruction"),
             "run": Handler(self.handle_run, True,
                 "continues simulation, use CTRL+C to interrupt"),
             "list": Handler(self.handle_list, True,
@@ -53,6 +55,10 @@ class Application:
                 "executes the given <command> [args...]"),
             "read": Handler(self.handle_read, True,
                 "reads the given <attribute>"),
+            "break": Handler(self.handle_break, True,
+                "sets a breakpoint for the given target"),
+            "delete": Handler(self.handle_delete, True,
+                "delete a breakpoint with the given ID"),
             "help": Handler(self.handle_help, False, "prints this message"),
         }
 
@@ -61,6 +67,7 @@ class Application:
             "d": "disconnect",
             "i": "info",
             "s": "step",
+            "si": "stepi",
             "c": "run",
             "k": "kill",
             "q": "quit",
@@ -68,6 +75,7 @@ class Application:
             "ls": "list",
             "x": "exec",
             "r": "read",
+            "b": "break",
             "h": "help",
         }
 
@@ -184,6 +192,17 @@ class Application:
     def handle_step(self, args):
         self.session.step()
 
+    def handle_stepi(self, args):
+        if len(args) == 2:
+            name = self.session.find_target(args[1])
+        else:
+            name = self.current
+
+        target = self.session.find_target(name)
+        if not target:
+            raise Exception(f"No such target: {name}")
+        self.session.stepi(target)
+
     def handle_run(self, args: List[str]):
         self.session.run()
         try:
@@ -256,7 +275,7 @@ class Application:
 
     def handle_cd(self, args):
         if len(args) > 2:
-            raise Exception("Usage: {} [module|..]".format(args[0]))
+            raise Exception(f"Usage: {args[0]} [module|..]")
 
         if len(args) == 1:
             self.current = None
@@ -269,18 +288,18 @@ class Application:
 
         m = self.find_module(args[1])
         if not m:
-            raise Exception("no such module: {}".format(args[1]))
+            raise Exception(f"no such module: {args[1]}")
         self.current = m
 
     def handle_exec(self, args):
         if len(args) < 2:
-            raise Exception("usage: {} <command> [args...]".format(args[0]))
+            raise Exception(f"usage: {args[0]} <command> [args...]")
 
         name = args[1]
         args = args[2:]
         cmd = self.find_command(name)
         if not cmd:
-            raise Exception("no such command: {}".format(name))
+            raise Exception(f"no such command: {name}")
 
         for res in cmd.execute(args):
             print(str(res))
@@ -296,13 +315,37 @@ class Application:
             for arg in args[1:]:
                 a = self.find_attribute(arg)
                 if not a:
-                    raise Exception("no such attribute: {}".format(arg))
+                    raise Exception(f"no such attribute: {arg}")
                 attrs.append(a)
 
         for attr in attrs:
             val = attr.get()
             print("{}{:<16}{}{}".format(termcolors.BOLD + termcolors.WHITE,
                                         attr.name, termcolors.RESET, str(val)))
+
+    def handle_break(self, args):
+        if len(args) < 2:
+            raise Exception(f"usage: {args[0]} <address> [targets]")
+
+        addr = args[1]
+        targets = []
+        for name in args[2:]:
+            targets.append(self.session.find_target(name))
+
+        if len(args) == 2:
+            targets = self.session.targets
+
+        for target in targets:
+            id = self.session.create_breakpoint(target, addr)
+            print(f"Created breakpoint {id} on target {target}")
+
+    def handle_delete(self, args):
+        if len(args) < 2:
+            raise Exception(f"usage: {args[0]} <id> [id...]")
+
+        for id in args[1:]:
+            print(f"deleting breakpoint {id}")
+            self.session.delete_breakpoint(id)
 
     def handle_help(self, args):
         for cmd in self.commands:
