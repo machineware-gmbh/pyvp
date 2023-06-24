@@ -27,6 +27,8 @@ class Attribute:
         return self.parent.hierarchy_name() + "." + self.name
 
     def get(self):
+        if self.count == 0:
+            return "<empty>"
         val = self.conn.command("geta," + self.hierarchy_name())
         if len(val) != self.count:
             raise Exception("unexpected response to a command: " + str(val))
