@@ -105,6 +105,7 @@ class Session:
                 self.targets.append(Target(self._conn, subnode))
 
     def running(self) -> bool:
+        self.update_status()
         return self._running
 
     def sysc_version(self) -> str:
@@ -114,12 +115,15 @@ class Session:
         return self._version[1]
 
     def time(self) -> int:
+        self.update_status()
         return self._time
 
     def cycle(self) -> int:
+        self.update_status()
         return self._cycle
 
     def reason(self) -> str:
+        self.update_status()
         return self._reason
 
     def disconnect(self):
@@ -131,6 +135,7 @@ class Session:
         self._conn.send("quit")
 
     def step(self):
+        self.update_status()
         if not self._running:
             self._running = True
             self._conn.command(f"resume,{self._quantum}ns")
@@ -139,6 +144,7 @@ class Session:
             self.update_status()
 
     def stepi(self, target):
+        self.update_status()
         if not self._running:
             self._running = True
             self._conn.command(f"step,{target}")
@@ -146,24 +152,16 @@ class Session:
         while self._running:
             self.update_status()
 
-    def _do_run(self):
-        self.update_status()
-        while self._running:
-            time.sleep(0.1)
-            self.update_status()
-
     def run(self):
+        self.update_status()
         if not self._running:
             self._running = True
             self._conn.command("resume")
-            self._thread = threading.Thread(target=self._do_run)
-            self._thread.start()
 
     def stop(self):
+        self.update_status()
         if self._running:
             self._conn.command("stop")
-            self._thread.join()
-            self._thread = None
 
     def create_breakpoint(self, target, addr) -> int:
         res = self._conn.command(f"mkbp,{target},{addr}")
