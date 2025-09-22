@@ -58,11 +58,9 @@ class Connection:
     def __init__(self, address: str):
         self.host: str = ""
         self.port: int = 0
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.socket.settimeout(5.0)
+        self.socket = None
 
-        addr = address.split(":")
+        addr = address.rsplit(":", 1)
         if len(addr) != 2:
             raise Exception("invalid address: " + address)
 
@@ -82,9 +80,19 @@ class Connection:
         if not host:
             host = "localhost"
 
-        self.socket.connect((host, port))
-        self.host = str(host)
-        self.port = int(port)
+        for family, socktype, proto, _, addr in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            try:
+                self.socket = socket.socket(family, socktype, proto)
+                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.socket.settimeout(5.0)
+                self.socket.connect(addr)
+                self.host = str(host)
+                self.port = int(port)
+                return
+            except OSError as e:
+                 continue
+
+        raise OSError("Could not connect to {} on port {}".format(host, port))
 
     def disconnect(self):
         if not self.connected():

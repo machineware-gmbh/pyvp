@@ -36,6 +36,7 @@ class Session:
         self._time: int = 0
         self._cycle: int = 0
         self._quantum: int = 0
+        self._conn = None
 
         self._conn = Connection(address)
         self.modules = []
