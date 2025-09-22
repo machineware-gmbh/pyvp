@@ -137,10 +137,15 @@ class Application:
         sys.stdout.flush()
 
     def run(self):
-        while True:
-            self.prompt()
-            args = sys.stdin.readline().split()
-            self.execute(args)
+        try:
+            while True:
+                self.prompt()
+                args = sys.stdin.readline().split()
+                self.execute(args)
+
+        except KeyboardInterrupt:
+            sys.stdout.write("\nquit\n")
+            return
 
     def execute(self, args):
         if not args:
