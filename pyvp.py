@@ -91,8 +91,11 @@ class Application:
             alias = [k for k, v in self.aliases.items() if str(v) == c]
             self.help.append([c] + alias)
 
-        if len(sys.argv) >= 2:
-            self.execute(["connect"] + sys.argv[-1:])
+        try:
+            if len(sys.argv) >= 2:
+                self.execute(["connect"] + sys.argv[-1:])
+        except Exception as err:
+            print("\n{}{}{}".format(termcolors.RED, err, termcolors.RESET))
 
     def find_module(self, name):
         m = None
@@ -137,15 +140,21 @@ class Application:
         sys.stdout.flush()
 
     def run(self):
-        try:
-            while True:
+        while True:
+            try:
                 self.prompt()
                 args = sys.stdin.readline().split()
                 self.execute(args)
 
-        except KeyboardInterrupt:
-            sys.stdout.write("\nquit\n")
-            return
+            except KeyboardInterrupt:
+                sys.stdout.write("\nquit\n")
+                return
+
+            except Exception as err:
+                print("\n{}{}{}".format(termcolors.RED, err, termcolors.RESET))
+                if isinstance(err, IOError):
+                    self.session = None
+                    self.current = None
 
     def execute(self, args):
         if not args:
@@ -162,18 +171,14 @@ class Application:
         command = self.aliases.get(args[0], args[0])
         handler = self.commands.get(command)
 
-        try:
-            if not handler:
-                raise Exception(
-                    "unknown command '{}', try 'help'".format(command))
+        if not handler:
+            raise Exception("unknown command '{}', try 'help'".format(command))
 
-            if not self.session and handler.needs_session:
-                raise Exception("not connected, use 'connect [host]:<port>'")
+        if not self.session and handler.needs_session:
+            raise Exception("not connected, use 'connect [host]:<port>'")
 
-            handler.func(args)
-            self.prevcmd = args
-        except Exception as err:
-            print("{}{}{}".format(termcolors.RED, err, termcolors.RESET))
+        handler.func(args)
+        self.prevcmd = args
 
     def handle_connect(self, args):
         if len(args) != 2:
@@ -217,6 +222,7 @@ class Application:
 
     def handle_run(self, args: List[str]):
         self.session.run()
+        stop_reason = "unknown"
         try:
             while self.session.running():
                 time.sleep(0.1)
@@ -225,9 +231,15 @@ class Application:
                     termcolors.RESET, self.session.time() / 1e9,
                     self.session.cycle()))
                 sys.stdout.flush()
+
+            stop_reason = self.session.reason()
         except KeyboardInterrupt:
             self.session.stop()
-        print(f"\nStopped by {self.session.reason()}")
+        except IOError as err:
+            self.current = None
+            self.session = None
+            stop_reason = str(err)
+        print(f"\nStopped by {stop_reason}")
 
     def handle_info(self, args):
         reports = {

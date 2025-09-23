@@ -50,9 +50,12 @@ class Session:
         self.update_modules()
 
     def __del__(self):
-        if self._conn:
-            self._conn.disconnect()
-            self.disconnect()
+        try:
+            if self._conn:
+                self._conn.disconnect()
+                self.disconnect()
+        except:
+             pass
 
     def __str__(self):
         return self.peer()
