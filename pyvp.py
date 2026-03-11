@@ -246,6 +246,7 @@ class Application:
             "Simulation Host": self.session.peer(),
             "VCML Version": self.session.vcml_version(),
             "SystemC Version": self.session.sysc_version(),
+            "Proto. Version": self.session.prot_version(),
             "Simulation Time": "{:.9f}s".format(self.session.time() / 1e9),
             "Delta Cycle": "{}".format(self.session.cycle())
         }
