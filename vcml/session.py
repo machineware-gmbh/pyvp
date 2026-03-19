@@ -30,7 +30,7 @@ from .target import Target
 
 class Session:
     def __init__(self, address: str):
-        self._version: List[str] = ["unknown", "unknown"]
+        self._version: List[str] = ["unknown", "unknown", "0"]
         self._running: bool = False
         self._reason: str = ""
         self._time: int = 0
@@ -65,7 +65,10 @@ class Session:
 
     def update_version(self):
         res = self._conn.command("version")
-        if len(res) != 2:
+        if len(res) == 2: # old vspserver -> no protover
+            res.append("0")
+
+        if len(res) != 3:
             raise Exception("unexpected response to version command: " + str(res))
 
         self._version = res
@@ -117,6 +120,9 @@ class Session:
 
     def vcml_version(self) -> str:
         return self._version[1]
+
+    def prot_version(self) -> str:
+        return self._version[2]
 
     def time(self) -> int:
         self.update_status()
