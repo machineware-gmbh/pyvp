@@ -1,23 +1,22 @@
- ##############################################################################
- #                                                                            #
- # Copyright 2024 MachineWare GmbH                                            #
- #                                                                            #
- # Licensed under the Apache License, Version 2.0 (the "License");            #
- # you may not use this file except in compliance with the License.           #
- # You may obtain a copy of the License at                                    #
- #                                                                            #
- #     http://www.apache.org/licenses/LICENSE-2.0                             #
- #                                                                            #
- # Unless required by applicable law or agreed to in writing, software        #
- # distributed under the License is distributed on an "AS IS" BASIS,          #
- # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
- # See the License for the specific language governing permissions and        #
- # limitations under the License.                                             #
- #                                                                            #
- ##############################################################################
+##############################################################################
+#                                                                            #
+# Copyright 2024 MachineWare GmbH                                            #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License");            #
+# you may not use this file except in compliance with the License.           #
+# You may obtain a copy of the License at                                    #
+#                                                                            #
+#     http://www.apache.org/licenses/LICENSE-2.0                             #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#                                                                            #
+##############################################################################
 
 import socket
-from typing import List
 
 
 def checksum(s: str) -> int:
@@ -26,7 +25,8 @@ def checksum(s: str) -> int:
         sum += ord(c)
     return sum % 256
 
-def escape(s: str) -> str:
+
+def rsp_escape(s: str) -> str:
     r = ""
     for c in s:
         if c == "$" or c == "#" or c == "*" or c == "}":
@@ -35,30 +35,49 @@ def escape(s: str) -> str:
             r += c
     return r
 
-def decompose(s: str) -> List[str]:
+
+def rsp_unescape(s: str) -> str:
+    r = ""
     i = 0
-    l = []
+    while i < len(s):
+        if s[i] == "}" and i < len(s) - 1:
+            r += chr(ord(s[i + 1]) ^ 0x20)
+            i += 2
+        else:
+            r += s[i]
+            i += 1
+    return r
+
+
+def vsp_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace(",", "\\,")
+
+
+def decompose(s: str) -> list[str]:
+    i = 0
+    parts = []
     b = ""
     while i < len(s):
         if s[i] == "\\" and i < len(s) - 1:
-            b += s[i+1]
+            b += s[i + 1]
             i += 2
         elif s[i] == ",":
-            l.append(b)
+            parts.append(b)
             b = ""
             i += 1
         else:
             b += s[i]
             i += 1
 
-    l.append(b)
-    return l
+    parts.append(b)
+    return parts
+
 
 class Connection:
     def __init__(self, address: str):
         self.host: str = ""
         self.port: int = 0
-        self.socket = None
+        self.socket: socket.socket | None = None
 
         addr = address.rsplit(":", 1)
         if len(addr) != 2:
@@ -89,15 +108,15 @@ class Connection:
                 self.host = str(host)
                 self.port = int(port)
                 return
-            except OSError as e:
-                 continue
+            except OSError:
+                continue
 
-        raise OSError("Could not connect to {} on port {}".format(host, port))
+        raise OSError(f"Could not connect to {host} on port {port}")
 
     def disconnect(self):
         if not self.connected():
             return
-
+        assert self.socket
         self.host = ""
         self.port = 0
         self.socket.shutdown(socket.SHUT_RDWR)
@@ -111,6 +130,7 @@ class Connection:
     def signal(self, sig: str):
         if not self.connected():
             raise Exception("not connected")
+        assert self.socket
         if len(sig) > 1:
             raise Exception("invalid signal: " + sig)
         self.socket.send(sig.encode())
@@ -118,15 +138,16 @@ class Connection:
     def send(self, data: str):
         if not self.connected():
             raise Exception("not connected")
+        assert self.socket
 
-        data = escape(data)
+        data = rsp_escape(data)
 
         for _ in range(5):
-            chk = "{0:02x}".format(checksum(data))
+            chk = f"{checksum(data):02x}"
             pkt = "$" + data + "#" + chk
             self.socket.send(pkt.encode())
             resp = self.socket.recv(1).decode()
-            if resp == '+':
+            if resp == "+":
                 return
 
         raise Exception("failed to send command: " + data)
@@ -134,12 +155,13 @@ class Connection:
     def recv(self) -> str:
         packet = ""
         chksum = 0
-        repeat = 5 # number of attempts to receive a valid response paket
-        maxlen = 10000000 # response length limit
+        repeat = 5  # number of attempts to receive a valid response paket
+        maxlen = 10000000  # response length limit
 
         while True:
             if not self.connected():
                 raise Exception("not connected")
+            assert self.socket
 
             r = self.socket.recv(1).decode()
             if r == "$":
@@ -147,13 +169,13 @@ class Connection:
                 chksum = 0
                 continue
 
-            if r == '#':
+            if r == "#":
                 chksum = chksum % 256
                 refsum = int(self.socket.recv(2).decode(), 16)
                 if chksum == refsum:
-                    self.socket.send("+".encode())
+                    self.socket.send(b"+")
                     return packet
-                self.socket.send("-".encode())
+                self.socket.send(b"-")
                 repeat = repeat - 1
                 if repeat == 0:
                     raise Exception("failed to receive response")
@@ -170,8 +192,8 @@ class Connection:
             if len(packet) > maxlen:
                 raise Exception("response length exceeds limit")
 
-    def command(self, cmd):
-        self.send(cmd)
+    def command(self, args: list[str]) -> list[str]:
+        self.send(",".join(vsp_escape(a) for a in args))
         raw = self.recv()
         v = decompose(raw)
 

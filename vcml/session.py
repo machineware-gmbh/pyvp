@@ -1,61 +1,44 @@
- ##############################################################################
- #                                                                            #
- # Copyright 2024 MachineWare GmbH                                            #
- #                                                                            #
- # Licensed under the Apache License, Version 2.0 (the "License");            #
- # you may not use this file except in compliance with the License.           #
- # You may obtain a copy of the License at                                    #
- #                                                                            #
- #     http://www.apache.org/licenses/LICENSE-2.0                             #
- #                                                                            #
- # Unless required by applicable law or agreed to in writing, software        #
- # distributed under the License is distributed on an "AS IS" BASIS,          #
- # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
- # See the License for the specific language governing permissions and        #
- # limitations under the License.                                             #
- #                                                                            #
- ##############################################################################
+##############################################################################
+#                                                                            #
+# Copyright 2024 MachineWare GmbH                                            #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License");            #
+# you may not use this file except in compliance with the License.           #
+# You may obtain a copy of the License at                                    #
+#                                                                            #
+#     http://www.apache.org/licenses/LICENSE-2.0                             #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#                                                                            #
+##############################################################################
 
-from operator import truediv
-import time
-import threading
 import xml.etree.ElementTree as ElementTree
-from typing import List
 
 from .connection import Connection
-from .attribute import Attribute
 from .module import Module
 from .target import Target
 
 
 class Session:
     def __init__(self, address: str):
-        self._version: List[str] = ["unknown", "unknown", "0"]
+        self._version: list[str] = ["unknown", "unknown", "0"]
         self._running: bool = False
         self._reason: str = ""
         self._time: int = 0
         self._cycle: int = 0
         self._quantum: int = 0
-        self._conn = None
-
-        self._conn = Connection(address)
+        self._conn: Connection = Connection(address)
         self.modules = []
         self.targets = []
 
-        self._conn.command("stop")
-
-        self.update_version()
+        self._conn.command(["stop"])
         self.update_quantum()
         self.update_status()
         self.update_modules()
-
-    def __del__(self):
-        try:
-            if self._conn:
-                self._conn.disconnect()
-                self.disconnect()
-        except:
-             pass
 
     def __str__(self):
         return self.peer()
@@ -64,8 +47,8 @@ class Session:
         return self._conn.peer()
 
     def update_version(self):
-        res = self._conn.command("version")
-        if len(res) == 2: # old vspserver -> no protover
+        res = self._conn.command(["version"])
+        if len(res) == 2:  # old vspserver -> no protover
             res.append("0")
 
         if len(res) != 3:
@@ -74,14 +57,14 @@ class Session:
         self._version = res
 
     def update_quantum(self):
-        res = self._conn.command("getq")
+        res = self._conn.command(["getq"])
         if len(res) != 1:
             raise Exception("unexpected response to getq command: " + str(res))
 
         self._quantum = int(res[0])
 
     def update_status(self):
-        res = self._conn.command("status")
+        res = self._conn.command(["status"])
         if len(res) != 3:
             raise Exception("unexpected response to status command: " + str(res))
 
@@ -96,7 +79,7 @@ class Session:
         self._cycle = int(res[2])
 
     def update_modules(self):
-        res = self._conn.command("list,xml")
+        res = self._conn.command(["list", "xml"])
         if len(res) != 1:
             raise Exception("unexpected response to l command: " + str(res))
 
@@ -148,7 +131,7 @@ class Session:
         self.update_status()
         if not self._running:
             self._running = True
-            self._conn.command(f"resume,{self._quantum}ns")
+            self._conn.command(["resume", f"{self._quantum}ns"])
 
         while self._running:
             self.update_status()
@@ -157,7 +140,7 @@ class Session:
         self.update_status()
         if not self._running:
             self._running = True
-            self._conn.command(f"step,{target}")
+            self._conn.command(["step", str(target)])
 
         while self._running:
             self.update_status()
@@ -166,19 +149,19 @@ class Session:
         self.update_status()
         if not self._running:
             self._running = True
-            self._conn.command("resume")
+            self._conn.command(["resume"])
 
     def stop(self):
         self.update_status()
         if self._running:
-            self._conn.command("stop")
+            self._conn.command(["stop"])
 
     def create_breakpoint(self, target, addr) -> int:
-        res = self._conn.command(f"mkbp,{target},{addr}")
+        res = self._conn.command(["mkbp", str(target), str(addr)])
         return int(res[0][20:])
 
     def delete_breakpoint(self, id):
-        self._conn.command(f"rmbp,{id}")
+        self._conn.command(["rmbp", str(id)])
 
     def dump(self):
         for m in self.modules:
