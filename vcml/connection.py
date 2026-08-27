@@ -119,7 +119,6 @@ class Connection:
         assert self.socket
         self.host = ""
         self.port = 0
-        self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
 
     def peer(self) -> str:
