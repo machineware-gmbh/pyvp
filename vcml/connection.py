@@ -16,6 +16,7 @@
 #                                                                            #
 ##############################################################################
 
+import re
 import socket
 
 
@@ -37,16 +38,9 @@ def rsp_escape(s: str) -> str:
 
 
 def rsp_unescape(s: str) -> str:
-    r = ""
-    i = 0
-    while i < len(s):
-        if s[i] == "}" and i < len(s) - 1:
-            r += chr(ord(s[i + 1]) ^ 0x20)
-            i += 2
-        else:
-            r += s[i]
-            i += 1
-    return r
+    if "}" not in s:
+        return s
+    return re.sub(r"\}(.)", lambda m: chr(ord(m[1]) ^ 0x20), s, flags=re.S)
 
 
 def vsp_escape(s: str) -> str:
@@ -54,22 +48,23 @@ def vsp_escape(s: str) -> str:
 
 
 def decompose(s: str) -> list[str]:
+    if "\\" not in s:
+        return s.split(",")
+
     i = 0
     parts = []
-    b = ""
-    while i < len(s):
-        if s[i] == "\\" and i < len(s) - 1:
-            b += s[i + 1]
-            i += 2
-        elif s[i] == ",":
-            parts.append(b)
-            b = ""
-            i += 1
+    b = []
+    for m in re.finditer(r"\\(.)|,", s, flags=re.S):
+        b.append(s[i : m.start()])
+        if m[1] is not None:
+            b.append(m[1])
         else:
-            b += s[i]
-            i += 1
+            parts.append("".join(b))
+            b = []
+        i = m.end()
 
-    parts.append(b)
+    b.append(s[i:])
+    parts.append("".join(b))
     return parts
 
 
@@ -78,6 +73,7 @@ class Connection:
         self.host: str = ""
         self.port: int = 0
         self.socket: socket.socket | None = None
+        self._rxbuf = bytearray()
 
         addr = address.rsplit(":", 1)
         if len(addr) != 2:
@@ -107,6 +103,7 @@ class Connection:
                 self.socket.connect(addr)
                 self.host = str(host)
                 self.port = int(port)
+                self._rxbuf = bytearray()
                 return
             except OSError:
                 continue
@@ -145,51 +142,62 @@ class Connection:
             chk = f"{checksum(data):02x}"
             pkt = "$" + data + "#" + chk
             self.socket.send(pkt.encode())
-            resp = self.socket.recv(1).decode()
-            if resp == "+":
+            if not self._rxbuf:
+                self._fill()
+            resp = self._rxbuf[:1]
+            del self._rxbuf[:1]
+            if resp == b"+":
                 return
 
         raise Exception("failed to send command: " + data)
 
+    def _fill(self):
+        assert self.socket
+        data = self.socket.recv(1 * 1024 * 1024)
+        if not data:
+            raise Exception("connection closed by peer")
+        self._rxbuf += data
+
     def recv(self) -> str:
-        packet = ""
-        chksum = 0
         repeat = 5  # number of attempts to receive a valid response paket
-        maxlen = 10000000  # response length limit
+        maxlen = 50_000_000  # response length limit
+        buf = self._rxbuf
 
         while True:
             if not self.connected():
                 raise Exception("not connected")
             assert self.socket
 
-            r = self.socket.recv(1).decode()
-            if r == "$":
-                packet = ""
-                chksum = 0
-                continue
+            # wait until we have '#' followed by two checksum digits
+            pos = 0
+            end = buf.find(b"#")
+            while end < 0 or len(buf) < end + 3:
+                if end < 0:
+                    pos = len(buf)
+                    if pos > 2 * maxlen:
+                        raise Exception("response length exceeds limit")
+                self._fill()
+                if end < 0:
+                    end = buf.find(b"#", pos)
 
-            if r == "#":
-                chksum = chksum % 256
-                refsum = int(self.socket.recv(2).decode(), 16)
-                if chksum == refsum:
-                    self.socket.send(b"+")
-                    return packet
+            # anything before the last '$' is discarded
+            start = buf.rfind(b"$", 0, end) + 1
+            payload = bytes(buf[start:end])
+            refsum = int(buf[end + 1 : end + 3], 16)
+            del buf[: end + 3]
+
+            if sum(payload) % 256 != refsum:
                 self.socket.send(b"-")
                 repeat = repeat - 1
                 if repeat == 0:
                     raise Exception("failed to receive response")
+                continue
 
-            if r == "}":
-                chksum += ord(r)
-                r = self.socket.recv(1).decode()
-                chksum += ord(r)
-                packet += str(ord(r) ^ 0x20)
-            else:
-                chksum += ord(r)
-                packet += str(r)
-
+            self.socket.send(b"+")
+            packet = rsp_unescape(payload.decode())
             if len(packet) > maxlen:
                 raise Exception("response length exceeds limit")
+            return packet
 
     def command(self, args: list[str]) -> list[str]:
         self.send(",".join(vsp_escape(a) for a in args))
