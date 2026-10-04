@@ -21,7 +21,7 @@ from .command import Command
 
 
 class Module:
-    def __init__(self, conn, parent, xmlnode):
+    def __init__(self, conn, parent, xmlnode, dispatcher):
         self.conn = conn
         self.parent = parent
         self.name = xmlnode.attrib["name"]
@@ -30,10 +30,14 @@ class Module:
         self.modules = []
         self.attributes = []
         self.commands = []
+        self._dispatcher = dispatcher
+
+        events = xmlnode.attrib.get("events", "")
+        self.events = events.split(",") if events else []
 
         for subnode in xmlnode:
             if subnode.tag == "object":
-                self.modules.append(Module(conn, self, subnode))
+                self.modules.append(Module(conn, self, subnode, dispatcher))
             elif subnode.tag == "attribute":
                 self.attributes.append(Attribute(conn, self, subnode))
             elif subnode.tag == "command":
@@ -56,6 +60,31 @@ class Module:
             a.disconnect()
         for c in self.commands:
             c.disconnect()
+
+    def _publishes(self, event):
+        return event in self.events or any(m._publishes(event) for m in self.modules)
+
+    def is_traceable(self):
+        return self._publishes("trace")
+
+    def has_leds(self):
+        return self._publishes("led")
+
+    def has_uart(self):
+        return self._publishes("uart")
+
+    def is_traced(self):
+        return self._dispatcher.is_subscribed(self, "trace")
+
+    def on_led(self, fn):
+        self._dispatcher.on_led(self, fn)
+
+    def on_uart(self, fn):
+        self._dispatcher.on_uart(self, fn)
+
+    def on_trace(self, fn, protocol=None):
+        name = protocol.PROTOCOL if protocol is not None else None
+        self._dispatcher.on_trace(self, fn, name)
 
     def find_module(self, name):
         path = name if isinstance(name, list) else name.split(".")
@@ -92,7 +121,8 @@ class Module:
         return m.find_command(path[-1:]) if m else None
 
     def dump(self):
-        print(self.hierarchy_name() + " (" + self.kind + ")")
+        events = f" [{','.join(self.events)}]" if self.events else ""
+        print(self.hierarchy_name() + " (" + self.kind + ")" + events)
         for a in self.attributes:
             print("  " + a.name + ": " + a.type)
         for m in self.modules:

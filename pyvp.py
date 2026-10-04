@@ -18,6 +18,7 @@
 #                                                                            #
 ##############################################################################
 
+import re
 import sys
 import time
 from collections import namedtuple
@@ -53,11 +54,66 @@ COMMAND = GREEN
 ATTRIBUTE = YELLOW
 
 
+LED_SYMBOLS_UNICODE = {True: "\u25cf", False: "\u25cb", None: "\u00b7"}
+LED_SYMBOLS_ASCII = {True: "*", False: ".", None: "?"}
+
+
+def use_unicode() -> bool:
+    return (sys.stdout.encoding or "").lower().replace("-", "") == "utf8"
+
+
+def publishers(mod, event):
+    found = [mod] if event in mod.events else []
+    for child in mod.modules:
+        found += publishers(child, event)
+    return found
+
+
+def read_led_states(leds):
+    states = []
+    cmd = leds.find_command("status")
+    try:
+        text = "\n".join(cmd.execute([])) if cmd else ""
+    except Exception:
+        text = ""
+    for match in re.finditer(r"LED(\d+): (on|off)", text):
+        idx = int(match[1])
+        states += [None] * (idx + 1 - len(states))
+        states[idx] = match[2] == "on"
+    return states
+
+
+def escape_text(data: bytes) -> str:
+    out = ""
+    for c in data:
+        if c == 0x09 or 0x20 <= c < 0x7F:
+            out += chr(c)
+        else:
+            out += f"\\x{c:02x}"
+    return out
+
+
+def escape_uart(data: bytes) -> str:
+    out = ""
+    for c in data:
+        if c == 0x0A:
+            out += "\\n"
+        elif 0x20 <= c < 0x7F:
+            out += chr(c)
+        else:
+            out += f"\\x{c:02x}"
+    return out
+
+
 class Application:
     def __init__(self):
         self.session: Session | None = None
         self.current: vcml.Module | None = None
         self.prevcmd = ["none"]
+        self.subscriptions = []
+        self.led_states = {}
+        self.term_lines = {}
+        self.event_log = None
 
         Handler = namedtuple("Handler", "func needs_session desc")
         self.commands = {
@@ -75,6 +131,16 @@ class Application:
             "read": Handler(self.handle_read, True, "reads the given <attribute>"),
             "break": Handler(self.handle_break, True, "sets a breakpoint for the given target"),
             "delete": Handler(self.handle_delete, True, "delete a breakpoint with the given ID"),
+            "events": Handler(
+                self.handle_events, True, "simulation events: add|rm trace|led|uart <module>..., log [file]; no arguments shows the status"
+            ),
+            "trace": Handler(self.handle_trace, True, "traces all ports of the given modules, or of the current module"),
+            "untrace": Handler(self.handle_trace, True, "stops tracing the given modules, or the current module"),
+            "watch": Handler(self.handle_watch, True, "shows the leds of the given modules, or of the current module"),
+            "unwatch": Handler(self.handle_watch, True, "stops watching the leds of the given modules, or of the current module"),
+            "follow": Handler(self.handle_follow, True, "shows the terminal output of the given modules, or of the current module"),
+            "unfollow": Handler(self.handle_follow, True, "stops following the terminals of the given modules, or of the current module"),
+            "sessions": Handler(self.handle_sessions, False, "lists local simulation sessions"),
             "help": Handler(self.handle_help, False, "prints this message"),
             "ll": Handler(self.handle_ll, True, "long listing: modules with kind, commands with description, attributes with type"),
         }
@@ -161,6 +227,17 @@ class Application:
                     candidates = [c.name for c in self.current.commands if c.name.startswith(text)]
                 elif cmd in ("stepi", "break") and self.session:
                     candidates = [t.name for t in self.session.targets if t.name.startswith(text)]
+                elif cmd == "connect" and len(prefix_tokens) == 1:
+                    candidates = [s.address() for s in Session.local_sessions() if s.address().startswith(text)]
+                elif cmd == "events" and len(prefix_tokens) == 1:
+                    candidates = [c for c in ("add", "rm", "log") if c.startswith(text)]
+                elif cmd == "events" and len(prefix_tokens) == 2 and prefix_tokens[1] in ("add", "rm"):
+                    candidates = [c for c in ("trace", "led", "uart") if c.startswith(text)]
+                elif self.session and (
+                    cmd in ("trace", "untrace", "watch", "unwatch", "follow", "unfollow") or (cmd == "events" and len(prefix_tokens) > 2)
+                ):
+                    base = self.current if self.current else self.session
+                    candidates = self._complete_module_path(base, text)
                 elif cmd == "cd" and self.session and len(prefix_tokens) == 1:
                     if "..".startswith(text):
                         candidates.append("..")
@@ -235,7 +312,7 @@ class Application:
         overlay_command = self.find_command(args[0])
         if overlay_command:
             args = ["exec", *args]
-        else:
+        elif args[0] not in self.commands and args[0] not in self.aliases:
             overlay_attribute = self.find_attribute(args[0])
             if overlay_attribute:
                 args = ["read", *args]
@@ -262,6 +339,7 @@ class Application:
         addr = args[1] if ":" in args[1] else "localhost:" + args[1]
         print(f"connecting to {addr}...")
         self.session = Session(addr)
+        self.session.on_events_dropped(lambda n: self.print_event(f"--- {n} events dropped ---"))
         print("connected to " + self.session.peer())
 
     def handle_disconnect(self, args):
@@ -270,6 +348,9 @@ class Application:
         self.session.disconnect()
         self.current = None
         self.session = None
+        self.subscriptions = []
+        self.led_states = {}
+        self.term_lines = {}
 
     def handle_quit(self, args):
         exit(int(args[1]) if len(args) > 1 else 0)
@@ -280,6 +361,9 @@ class Application:
         self.session.kill()
         self.current = None
         self.session = None
+        self.subscriptions = []
+        self.led_states = {}
+        self.term_lines = {}
 
     def handle_step(self, args):
         assert self.session
@@ -322,7 +406,9 @@ class Application:
             self.current = None
             self.session = None
             stop_reason = str(err)
-        print(f"\nStopped by {stop_reason}")
+        print()
+        self.flush_terminals()
+        print(f"Stopped by {stop_reason}")
 
     def handle_info(self, args):
         assert self.session
@@ -366,7 +452,7 @@ class Application:
 
         outputs = []
         for m in mods:
-            outputs.append(f"{MODULE}{m.name:<20}{RESET}")
+            outputs.append(f"{MODULE}{m.name + self.event_marks(m):<20}{RESET}")
         for c in cmds:
             outputs.append(f"{COMMAND}{c.name:<20}{RESET}")
         for a in attr:
@@ -388,6 +474,7 @@ class Application:
             line = f"{MODULE}{m.name}{RESET}"
             if m.kind:
                 line += f" {DIM}({m.kind}){RESET}"
+            line += self.event_marks(m)
             print(line)
         for c in cmds:
             print(f"{COMMAND}{c.name}{RESET} {DIM}- {c.desc}{RESET}")
@@ -469,6 +556,162 @@ class Application:
         for id in args[1:]:
             print(f"deleting breakpoint {id}")
             self.session.delete_breakpoint(id)
+
+    def event_marks(self, mod):
+        return "".join(f" [{event}]" for event, m in self.subscriptions if m is mod)
+
+    def print_event(self, line):
+        if self.event_log:
+            self.event_log.write(line + "\n")
+            return
+        sys.stdout.write("\033[1000D\033[K" + line + "\n")
+
+    def handle_events(self, args):
+        assert self.session
+        if len(args) == 1:
+            reports = {
+                "Output": "file" if self.event_log else "console",
+                "Dropped": str(self.session.events_dropped()),
+            }
+            for r in reports:
+                print(f"{BOLD + WHITE}{r:<16}{RESET}{WHITE}{reports[r]}{RESET}")
+            for event, mod in self.subscriptions:
+                print(f"{BOLD + WHITE}{event:<16}{RESET}{WHITE}{mod}{RESET}")
+            return
+
+        if args[1] == "log":
+            if self.event_log:
+                self.event_log.close()
+                self.event_log = None
+            if len(args) > 2:
+                self.event_log = open(args[2], "w", encoding="utf-8")  # noqa: SIM115
+            return
+
+        if args[1] not in ("add", "rm"):
+            raise Exception(f"unknown events command '{args[1]}'")
+        if len(args) < 4:
+            raise Exception(f"usage: {args[0]} {args[1]} trace|led|uart <module>...")
+
+        enable = args[1] == "add"
+        event = args[2]
+        if event not in ("trace", "led", "uart"):
+            raise Exception(f"unknown event '{event}', use trace, led or uart")
+
+        for name in args[3:]:
+            mod = self.find_module(name)
+            if not mod:
+                raise Exception(f"no such module: {name}")
+            self.select_event(event, mod, enable)
+
+    def select_event(self, event, mod, enable):
+        if event == "trace":
+            mod.on_trace((lambda info, tx: self.print_event(vcml.format_trace(info, tx))) if enable else None)
+        elif event == "led":
+            mod.on_led(
+                (lambda ev: self.print_event(f"{vcml.format_time(ev.time_ps)} {ev.leds} led {ev.index}={int(ev.state)}"))
+                if enable
+                else None
+            )
+        else:
+            mod.on_uart(
+                (lambda ev: self.print_event(f'{vcml.format_time(ev.time_ps)} {ev.terminal} uart "{escape_uart(ev.data)}"'))
+                if enable
+                else None
+            )
+
+        self.subscriptions = [(e, m) for e, m in self.subscriptions if e != event or m is not mod]
+        if enable:
+            self.subscriptions.append((event, mod))
+
+    def resolve_modules(self, names, at_top):
+        assert self.session
+        mods = []
+        for name in names or ["."]:
+            if name != ".":
+                mod = self.find_module(name)
+                if not mod:
+                    raise Exception(f"no such module: {name}")
+                mods.append(mod)
+            elif self.current:
+                mods.append(self.current)
+            else:
+                mods += [m for m in self.session.modules if at_top(m)]
+        return mods
+
+    def handle_trace(self, args):
+        for mod in self.resolve_modules(args[1:], lambda m: m.is_traceable()):
+            self.select_event("trace", mod, args[0] == "trace")
+
+    def handle_watch(self, args):
+        enable = args[0] == "watch"
+        for mod in self.resolve_modules(args[1:], lambda m: m.has_leds()):
+            if enable and not mod.has_leds():
+                hint = ", use 'follow' for terminals" if mod.has_uart() else ""
+                raise Exception(f"'{mod}' has no leds{hint}")
+            for leds in publishers(mod, "led"):
+                self.watch_leds(leds, enable)
+
+    def handle_follow(self, args):
+        enable = args[0] == "follow"
+        for mod in self.resolve_modules(args[1:], lambda m: m.has_uart()):
+            if enable and not mod.has_uart():
+                hint = ", use 'watch' for leds" if mod.has_leds() else ""
+                raise Exception(f"'{mod}' has no terminals{hint}")
+            for term in publishers(mod, "uart"):
+                self.follow_terminal(term, enable)
+
+    def watch_leds(self, leds, enable):
+        self.led_states.pop(leds, None)
+        if enable:
+            self.led_states[leds] = read_led_states(leds)
+        leds.on_led(self.show_led if enable else None)
+        self.subscriptions = [(e, m) for e, m in self.subscriptions if e != "led" or m is not leds]
+        if enable:
+            self.subscriptions.append(("led", leds))
+
+    def show_led(self, ev):
+        states = self.led_states.setdefault(ev.leds, [])
+        states += [None] * (ev.index + 1 - len(states))
+        states[ev.index] = ev.state
+        symbols = LED_SYMBOLS_UNICODE if use_unicode() else LED_SYMBOLS_ASCII
+        bar = "".join(symbols[s] for s in states)
+        self.print_event(f"{vcml.format_time(ev.time_ps)} {ev.leds} {bar}  ({ev.index} {'on' if ev.state else 'off'})")
+
+    def follow_terminal(self, term, enable):
+        self.flush_terminals()
+        term.on_uart(self.show_terminal if enable else None)
+        self.subscriptions = [(e, m) for e, m in self.subscriptions if e != "uart" or m is not term]
+        if enable:
+            self.subscriptions.append(("uart", term))
+
+    def show_terminal(self, ev):
+        line = self.term_lines.pop(ev.terminal, None)
+        for c in ev.data:
+            if line is None:
+                line = (ev.time_ps, bytearray())
+            if c == 0x0A:
+                self.print_terminal_line(ev.terminal, *line)
+                line = None
+            elif c != 0x0D:
+                line[1].append(c)
+        if line is not None:
+            self.term_lines[ev.terminal] = line
+
+    def print_terminal_line(self, term, time_ps, data):
+        self.print_event(f"{vcml.format_time(time_ps)} {term} | {escape_text(data)}")
+
+    def flush_terminals(self):
+        lines, self.term_lines = self.term_lines, {}
+        for term, line in lines.items():
+            if line[1]:
+                self.print_terminal_line(term, *line)
+
+    def handle_sessions(self, args):
+        sessions = Session.local_sessions()
+        if not sessions:
+            print("no local sessions found")
+        for s in sessions:
+            print(f"{SESSION}{s.address()}{RESET} {DIM}({s.program}, pid {s.pid}){RESET}")
 
     def handle_help(self, args):
         for cmd in self.commands:

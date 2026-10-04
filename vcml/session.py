@@ -16,11 +16,56 @@
 #                                                                            #
 ##############################################################################
 
+import contextlib
+import getpass
+import os
+import re
+import sys
+import tempfile
 import xml.etree.ElementTree as ElementTree
+from dataclasses import dataclass
 
 from .connection import Connection
+from .dispatcher import Dispatcher
 from .module import Module
 from .target import Target
+
+
+@dataclass
+class SessionInfo:
+    host: str
+    port: int
+    pid: int
+    user: str
+    program: str
+
+    def address(self) -> str:
+        return f"{self.host}:{self.port}"
+
+
+def process_exists(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # the process exists but belongs to another user
+            return ctypes.GetLastError() == 5  # ERROR_ACCESS_DENIED
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return not ok or code.value == STILL_ACTIVE
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # the process exists but belongs to another user
+    return True
 
 
 class Session:
@@ -32,12 +77,13 @@ class Session:
         self._cycle: int = 0
         self._quantum: int = 0
         self._conn: Connection = Connection(address)
+        self._dispatcher: Dispatcher = Dispatcher(self._conn)
         self.modules = []
         self.targets = []
 
-        self._conn.command(["stop"])
+        self.update_version()
+        self.stop()
         self.update_quantum()
-        self.update_status()
         self.update_modules()
 
     def __str__(self):
@@ -65,7 +111,7 @@ class Session:
 
     def update_status(self):
         res = self._conn.command(["status"])
-        if len(res) != 3:
+        if len(res) not in (3, 4):
             raise Exception("unexpected response to status command: " + str(res))
 
         status = res[0]
@@ -78,6 +124,9 @@ class Session:
         self._time = int(res[1])
         self._cycle = int(res[2])
 
+        if len(res) > 3:
+            self._dispatcher.dispatch(res[3])
+
     def update_modules(self):
         res = self._conn.command(["list", "xml"])
         if len(res) != 1:
@@ -88,11 +137,23 @@ class Session:
             raise Exception("invalid hierarchy root node: " + root.tag)
 
         self.modules.clear()
+        self.targets.clear()
         for subnode in root:
             if subnode.tag == "object":
-                self.modules.append(Module(self._conn, None, subnode))
+                self.modules.append(Module(self._conn, None, subnode, self._dispatcher))
             elif subnode.tag == "target":
                 self.targets.append(Target(self._conn, subnode))
+
+        modules = {}
+
+        def add(m):
+            modules[m.hierarchy_name()] = m
+            for child in m.modules:
+                add(child)
+
+        for m in self.modules:
+            add(m)
+        self._dispatcher.set_modules(modules)
 
     def running(self) -> bool:
         self.update_status()
@@ -127,11 +188,11 @@ class Session:
     def kill(self):
         self._conn.send("quit")
 
-    def step(self):
+    def step(self, ns: int = 0):
         self.update_status()
         if not self._running:
             self._running = True
-            self._conn.command(["resume", f"{self._quantum}ns"])
+            self._conn.command(["resume", f"{ns or self._quantum}ns"])
 
         while self._running:
             self.update_status()
@@ -155,6 +216,62 @@ class Session:
         self.update_status()
         if self._running:
             self._conn.command(["stop"])
+            while self._running:
+                self.update_status()
+
+    def on_events_dropped(self, fn):
+        self._dispatcher.on_dropped(fn)
+
+    def events_dropped(self) -> int:
+        return self._dispatcher.dropped()
+
+    @staticmethod
+    def local_sessions() -> list[SessionInfo]:
+        sessions = []
+        orphans = []
+        tmpdir = tempfile.gettempdir()
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = ""
+
+        try:
+            entries = os.listdir(tmpdir)
+        except OSError:
+            return sessions
+
+        for entry in entries:
+            match = re.fullmatch(r"vcml_session_(\d+)", entry)
+            if not match:
+                continue
+
+            path = os.path.join(tmpdir, entry)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    lines = [line.strip() for line in f.read().splitlines()]
+                if len(lines) < 2 or not lines[0]:
+                    continue
+                host = lines[0]
+                port = int(lines[1])
+            except (OSError, ValueError):
+                continue
+
+            owner = lines[2] if len(lines) > 2 else ""
+            program = lines[3] if len(lines) > 3 else ""
+            pid = int(match[1])
+
+            if not process_exists(pid):
+                if user and owner == user:
+                    orphans.append(path)
+                continue
+
+            sessions.append(SessionInfo(host, port, pid, owner, program))
+
+        for orphan in orphans:
+            with contextlib.suppress(OSError):
+                os.remove(orphan)
+
+        return sessions
 
     def create_breakpoint(self, target, addr) -> int:
         res = self._conn.command(["mkbp", str(target), str(addr)])
