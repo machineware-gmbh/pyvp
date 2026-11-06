@@ -20,4 +20,6 @@ from .attribute import Attribute as Attribute
 from .command import Command as Command
 from .module import Module as Module
 from .session import Session as Session
+from .session import SessionInfo as SessionInfo
+from .session import local_sessions as local_sessions
 from .target import Target as Target

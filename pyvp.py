@@ -18,6 +18,7 @@
 #                                                                            #
 ##############################################################################
 
+import os
 import sys
 import time
 from collections import namedtuple
@@ -62,7 +63,7 @@ class Application:
 
         Handler = namedtuple("Handler", "func needs_session desc")
         self.commands = {
-            "connect": Handler(self.handle_connect, False, "connect to a local simulation on <port> or to a remote one on <host>:<port>"),
+            "connect": Handler(self.handle_connect, False, "connect to [host]:<port>, lists local simulations without arguments"),
             "disconnect": Handler(self.handle_disconnect, True, "disconnect from the current session without terminating it"),
             "quit": Handler(self.handle_quit, False, "disconnect from session and quit program"),
             "kill": Handler(self.handle_kill, True, "terminate current session"),
@@ -156,7 +157,9 @@ class Application:
                 first = prefix_tokens[0]
                 cmd = self.aliases.get(first, first)
 
-                if cmd == "read" and self.current:
+                if cmd == "connect" and len(prefix_tokens) == 1:
+                    candidates = [s.address for s in vcml.local_sessions() if s.address.startswith(text)]
+                elif cmd == "read" and self.current:
                     candidates = [a.name for a in self.current.attributes if a.name.startswith(text)]
                 elif cmd == "exec" and self.current:
                     candidates = [c.name for c in self.current.commands if c.name.startswith(text)]
@@ -256,8 +259,16 @@ class Application:
         self.prevcmd = args
 
     def handle_connect(self, args):
+        if len(args) == 1:
+            sessions = vcml.local_sessions()
+            if not sessions:
+                print("no local sessions found")
+            for s in sessions:
+                print(f"{SESSION}{s.address:<24}{RESET}{os.path.basename(s.program)} {DIM}(pid {s.pid}, {s.user}){RESET}")
+            return
+
         if len(args) != 2:
-            raise Exception(f"usage: {args[0]} [host]:<port>")
+            raise Exception(f"usage: {args[0]} [[host]:<port>]")
 
         if self.session:
             self.handle_disconnect(args)

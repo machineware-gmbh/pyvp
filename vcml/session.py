@@ -16,11 +16,72 @@
 #                                                                            #
 ##############################################################################
 
+import os
+import re
+import sys
+import tempfile
 import xml.etree.ElementTree as ElementTree
+from dataclasses import dataclass
 
 from .connection import Connection
 from .module import Module
 from .target import Target
+
+
+@dataclass
+class SessionInfo:
+    host: str
+    port: int
+    pid: int
+    user: str
+    program: str
+
+    @property
+    def address(self) -> str:
+        return f"{self.host}:{self.port}"
+
+
+def _session_dir() -> str:
+    # must match mwr::temp_dir(), which ignores TMPDIR on linux
+    if sys.platform.startswith("linux"):
+        return "/tmp"
+    return tempfile.gettempdir()
+
+
+def local_sessions() -> list[SessionInfo]:
+    """Sessions announced via vcml_session_<pid> files in the temp directory.
+
+    Malformed files are ignored. Files of simulations that no longer run are
+    not detected here, they are pruned by libvsp and vspts."""
+    sessions: list[SessionInfo] = []
+    tmpdir = _session_dir()
+    try:
+        entries = os.listdir(tmpdir)
+    except OSError:
+        return sessions
+
+    for entry in sorted(entries):
+        match = re.fullmatch(r"vcml_session_(\d+)", entry)
+        if not match:
+            continue
+
+        path = os.path.join(tmpdir, entry)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+            host = lines[0].strip()
+            port = int(lines[1].strip())
+        except (OSError, IndexError, ValueError):
+            continue
+
+        owner = lines[2].strip() if len(lines) > 2 else ""
+        program = lines[3].strip() if len(lines) > 3 else ""
+        pid = int(match.group(1))
+
+        if host:
+            sessions.append(SessionInfo(host, port, pid, owner, program))
+
+    return sessions
 
 
 class Session:
