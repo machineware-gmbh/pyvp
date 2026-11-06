@@ -51,6 +51,7 @@ SESSION = BOLD + CYAN
 MODULE = CYAN
 COMMAND = GREEN
 ATTRIBUTE = YELLOW
+FINISHED = BOLD + MAGENTA
 
 
 class Application:
@@ -202,6 +203,8 @@ class Application:
             sys.stdout.write(" " + SESSION + str(self.session) + RESET)
             if self.current:
                 sys.stdout.write(f" {MODULE + str(self.current) + RESET}")
+            if self.session.finished():
+                sys.stdout.write(f" {FINISHED}[ finished ]{RESET}")
             sys.stdout.write("\n")
         else:
             print(f"{RED + BOLD}[ no session ]{RESET}")
@@ -322,7 +325,18 @@ class Application:
             self.current = None
             self.session = None
             stop_reason = str(err)
-        print(f"\nStopped by {stop_reason}")
+        if stop_reason == "finished":
+            print(f"\n{FINISHED}Simulation finished{RESET}")
+        else:
+            print(f"\nStopped by {stop_reason}")
+
+    def status_str(self) -> str:
+        assert self.session
+        if self.session.running():
+            return "running"
+        if self.session.finished():
+            return "finished"
+        return f"stopped ({self.session.reason()})"
 
     def handle_info(self, args):
         assert self.session
@@ -333,6 +347,7 @@ class Application:
             "Proto. Version": self.session.prot_version(),
             "Simulation Time": f"{self.session.time() / 1e9:.9f}s",
             "Delta Cycle": f"{self.session.cycle()}",
+            "Status": self.status_str(),
         }
 
         for r in reports:

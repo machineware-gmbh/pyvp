@@ -36,6 +36,7 @@ class Session:
         self.targets = []
 
         self._conn.command(["stop"])
+        self.update_version()
         self.update_quantum()
         self.update_status()
         self.update_modules()
@@ -98,6 +99,14 @@ class Session:
         self.update_status()
         return self._running
 
+    def finished(self) -> bool:
+        self.update_status()
+        return not self._running and self._reason == "finished"
+
+    def _check_not_finished(self):
+        if not self._running and self._reason == "finished":
+            raise Exception("simulation finished, use 'kill' or 'disconnect' to let it exit")
+
     def sysc_version(self) -> str:
         return self._version[0]
 
@@ -129,27 +138,30 @@ class Session:
 
     def step(self):
         self.update_status()
+        self._check_not_finished()
         if not self._running:
-            self._running = True
             self._conn.command(["resume", f"{self._quantum}ns"])
+            self._running = True
 
         while self._running:
             self.update_status()
 
     def stepi(self, target):
         self.update_status()
+        self._check_not_finished()
         if not self._running:
-            self._running = True
             self._conn.command(["step", str(target)])
+            self._running = True
 
         while self._running:
             self.update_status()
 
     def run(self):
         self.update_status()
+        self._check_not_finished()
         if not self._running:
-            self._running = True
             self._conn.command(["resume"])
+            self._running = True
 
     def stop(self):
         self.update_status()
