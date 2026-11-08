@@ -22,4 +22,9 @@ from .module import Module as Module
 from .session import Session as Session
 from .session import SessionInfo as SessionInfo
 from .session import local_sessions as local_sessions
+from .target import Instruction as Instruction
+from .target import MemStatus as MemStatus
+from .target import StackFrame as StackFrame
+from .target import Symbol as Symbol
 from .target import Target as Target
+from .target import TargetInfo as TargetInfo

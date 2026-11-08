@@ -199,6 +199,12 @@ class Connection:
                 raise Exception("response length exceeds limit")
             return packet
 
+    # raw reply, without checking for OK; servers answer [""] if they do not
+    # know a command
+    def request(self, args: list[str]) -> list[str]:
+        self.send(",".join(vsp_escape(a) for a in args))
+        return decompose(self.recv())
+
     def command(self, args: list[str]) -> list[str]:
         self.send(",".join(vsp_escape(a) for a in args))
         raw = self.recv()
